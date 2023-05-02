@@ -1,6 +1,9 @@
 """Execute code in a Docker container"""
 import os
 import subprocess
+import pathlib
+import venv
+
 from pathlib import Path
 
 import docker
@@ -15,7 +18,7 @@ CFG = Config()
 
 @command("execute_python_file", "Execute Python File", '"filename": "<filename>"')
 def execute_python_file(filename: str) -> str:
-    """Execute a Python file in a Docker container and return the output
+    """Execute a Python file in a Venv and return the output
 
     Args:
         filename (str): The name of the file to execute
@@ -41,57 +44,33 @@ def execute_python_file(filename: str) -> str:
             return f"Error: {result.stderr}"
 
     try:
-        client = docker.from_env()
-        # You can replace this with the desired Python image/version
-        # You can find available Python images on Docker Hub:
-        # https://hub.docker.com/_/python
-        image_name = "python:3-alpine"
-        try:
-            client.images.get(image_name)
-            logger.warn(f"Image '{image_name}' found locally")
-        except ImageNotFound:
-            logger.info(
-                f"Image '{image_name}' not found locally, pulling from Docker Hub"
-            )
-            # Use the low-level API to stream the pull response
-            low_level_client = docker.APIClient()
-            for line in low_level_client.pull(image_name, stream=True, decode=True):
-                # Print the status and progress, if available
-                status = line.get("status")
-                progress = line.get("progress")
-                if status and progress:
-                    logger.info(f"{status}: {progress}")
-                elif status:
-                    logger.info(status)
-        container = client.containers.run(
-            image_name,
-            f"python {Path(filename).relative_to(CFG.workspace_path)}",
-            volumes={
-                CFG.workspace_path: {
-                    "bind": "/workspace",
-                    "mode": "ro",
-                }
-            },
-            working_dir="/workspace",
-            stderr=True,
-            stdout=True,
-            detach=True,
-        )
+        # Set the desired virtual environment directory
+        venv_dir = f"{CFG.workspace_path}/venv"
+        if pathlib.Path(venv_dir).exists():
+            print("Virtual environment already exists.")
+        else:
+            # Create the virtual environment
+            venv.create(venv_dir, with_pip=True)
+            print("Virtual environment created.")
 
-        container.wait()
-        logs = container.logs().decode("utf-8")
-        container.remove()
+        # Define the path to the Python interpreter within the virtual environment
+        venv_python = f"{venv_dir}/Scripts/python.exe"
 
-        # print(f"Execution complete. Output: {output}")
-        # print(f"Logs: {logs}")
+        filepath = Path(filename)
+
+        script_process = subprocess.Popen([venv_python, filepath], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        script_stdout, script_stderr = script_process.communicate()
+
+        # Wait for the script to complete
+        script_process.wait()
+
+        # Capture the script output and append it to the logs
+        if script_stdout:
+            logs += "Script Output:\n" + script_stdout.decode("utf-8") + "\n"
+        if script_stderr:
+            logs += "Script Error:\n" + script_stderr.decode("utf-8") + "\n"
 
         return logs
-
-    except docker.errors.DockerException as e:
-        logger.warn(
-            "Could not run the script in a container. If you haven't already, please install Docker https://docs.docker.com/get-docker/"
-        )
-        return f"Error: {str(e)}"
 
     except Exception as e:
         return f"Error: {str(e)}"
